@@ -1,0 +1,185 @@
+From 7aa928f2c827ff5bf3563a169ccbc3999fc8e3fd Mon Sep 17 00:00:00 2001
+From: Vedesh Padal <92447640+vedesh-padal@users.noreply.github.com>
+Date: Wed, 16 Aug 2023 06:52:43 +0000
+Subject: [PATCH 1/4] Change-1: Changes to schema object in componentDidMount
+ in Graph.tsx
+
+---
+ src/Graph.tsx | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/src/Graph.tsx b/src/Graph.tsx
+index 277797d..9d3893e 100644
+--- a/src/Graph.tsx
++++ b/src/Graph.tsx
+@@ -23,10 +23,13 @@ class Graph extends Component<IProps, {}> {
+     const elem = document.getElementsByTagName('perspective-viewer')[0] as unknown as PerspectiveViewerElement;
+ 
+     const schema = {
+-      stock: 'string',
+-      top_ask_price: 'float',
+-      top_bid_price: 'float',
++      price_abc: 'float',
++      price_def: 'float',
++      ratio: 'float',
+       timestamp: 'date',
++      upper_bound: 'float',
++      lower_bound: 'float',
++      trigger_alert: 'float',
+     };
+ 
+     if (window.perspective && window.perspective.worker()) {
+-- 
+2.41.0
+
+
+From 6dd7fa3954c50ddbc9aeee60fce90bcea111f7ca Mon Sep 17 00:00:00 2001
+From: Vedesh Padal <92447640+vedesh-padal@users.noreply.github.com>
+Date: Wed, 16 Aug 2023 07:08:06 +0000
+Subject: [PATCH 2/4] Change-2: Configuring the graph, table.update
+
+---
+ src/Graph.tsx | 20 ++++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/src/Graph.tsx b/src/Graph.tsx
+index 9d3893e..d12b7cc 100644
+--- a/src/Graph.tsx
++++ b/src/Graph.tsx
+@@ -1,5 +1,5 @@
+ import React, { Component } from 'react';
+-import { Table } from '@finos/perspective';
++import { Table, TableData } from '@finos/perspective';
+ import { ServerRespond } from './DataStreamer';
+ import { DataManipulator } from './DataManipulator';
+ import './Graph.css';
+@@ -39,23 +39,27 @@ class Graph extends Component<IProps, {}> {
+       // Load the `table` in the `<perspective-viewer>` DOM reference.
+       elem.load(this.table);
+       elem.setAttribute('view', 'y_line');
+-      elem.setAttribute('column-pivots', '["stock"]');
++      // we removed 'column-pivots' because we are concerned about the ratios between the two stocks and not their seperate prices
+       elem.setAttribute('row-pivots', '["timestamp"]');
+-      elem.setAttribute('columns', '["top_ask_price"]');
++      elem.setAttribute('columns', '["ratio", "lower_bound", "upper_bound", "trigger_alert"]');
++      // 'aggregates' allows us to handle the duplicate data, and consolidate into one data point
+       elem.setAttribute('aggregates', JSON.stringify({
+-        stock: 'distinctcount',
+-        top_ask_price: 'avg',
+-        top_bid_price: 'avg',
++        price_abc: 'avg',
++        price_def: 'avg',
++        ratio: 'avg',
+         timestamp: 'distinct count',
++        upper_bound: 'avg',
++        lower_bound: 'avg',
++        trigger_alert: 'avg',
+       }));
+     }
+   }
+ 
+   componentDidUpdate() {
+     if (this.table) {
+-      this.table.update(
++      this.table.update([
+         DataManipulator.generateRow(this.props.data),
+-      );
++      ] as unknown as TableData);
+     }
+   }
+ }
+-- 
+2.41.0
+
+
+From 35655db8118620a7b6394a67748a0d7ee7ff238c Mon Sep 17 00:00:00 2001
+From: Vedesh Padal <92447640+vedesh-padal@users.noreply.github.com>
+Date: Wed, 16 Aug 2023 07:24:04 +0000
+Subject: [PATCH 3/4] Change-3: Changes to DataManipulator.ts file (to fix how
+ the fetched raw stock data is modified before the Graph component renders it)
+
+---
+ src/DataManipulator.ts | 33 ++++++++++++++++++++++++---------
+ 1 file changed, 24 insertions(+), 9 deletions(-)
+
+diff --git a/src/DataManipulator.ts b/src/DataManipulator.ts
+index 7f62295..59b4358 100644
+--- a/src/DataManipulator.ts
++++ b/src/DataManipulator.ts
+@@ -1,20 +1,35 @@
+ import { ServerRespond } from './DataStreamer';
+ 
+ export interface Row {
+-  stock: string,
+-  top_ask_price: number,
++  // the below changes determine the structure of the object returned by the generateRow function
++  // and this return object must correspond to the schema of the table in the Graph component
++  price_abc: number,
++  price_def: number,
++  ratio: number,
+   timestamp: Date,
++  upper_bound: number,
++  lower_bound: number,
++  trigger_alert: number | undefined,
+ }
+ 
+ 
+ export class DataManipulator {
+   static generateRow(serverResponds: ServerRespond[]) {
+-    return serverResponds.map((el: any) => {
+-      return {
+-        stock: el.stock,
+-        top_ask_price: el.top_ask && el.top_ask.price || 0,
+-        timestamp: el.timestamp,
+-      };
+-    })
++    const priceABC = (serverResponds[0].top_ask.price + serverResponds[0].top_bid.price) / 2;
++    const priceDEF = (serverResponds[1].top_ask.price + serverResponds[1].top_bid.price) / 2;
++    const ratio = priceABC / priceDEF;
++    const upperBound = 1 + 0.10;
++    const lowerBound = 1 - 0.10;
++    
++    return {
++      price_abc: priceABC,
++      price_def: priceDEF,
++      ratio,
++      timestamp: serverResponds[0].timestamp > serverResponds[1].timestamp ? 
++        serverResponds[0].timestamp : serverResponds[1].timestamp,
++      upper_bound: upperBound,
++      lower_bound: lowerBound,
++      trigger_alert: (ratio > upperBound || ratio < lowerBound) ? ratio : undefined,
++    }
+   }
+ }
+-- 
+2.41.0
+
+
+From 0842b0e40ba94daa242b253bd4f4c4a1193049a3 Mon Sep 17 00:00:00 2001
+From: Vedesh Padal <92447640+vedesh-padal@users.noreply.github.com>
+Date: Wed, 16 Aug 2023 07:38:22 +0000
+Subject: [PATCH 4/4] Change-4: Changes to upperBound and lowerBound to +/-5%
+ in order to see the trigger alerts
+
+---
+ src/DataManipulator.ts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/DataManipulator.ts b/src/DataManipulator.ts
+index 59b4358..a51fa2f 100644
+--- a/src/DataManipulator.ts
++++ b/src/DataManipulator.ts
+@@ -18,8 +18,8 @@ export class DataManipulator {
+     const priceABC = (serverResponds[0].top_ask.price + serverResponds[0].top_bid.price) / 2;
+     const priceDEF = (serverResponds[1].top_ask.price + serverResponds[1].top_bid.price) / 2;
+     const ratio = priceABC / priceDEF;
+-    const upperBound = 1 + 0.10;
+-    const lowerBound = 1 - 0.10;
++    const upperBound = 1 + 0.05;
++    const lowerBound = 1 - 0.05;
+     
+     return {
+       price_abc: priceABC,
+-- 
+2.41.0
+
